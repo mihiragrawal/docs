@@ -1,43 +1,49 @@
 +++
-title = "Install KubeLB Manager and setup Management Cluster"
-linkTitle = "Setup Management Cluster"
+title = "Install KubeLB Manager and set up the management cluster"
+linkTitle = "Set Up Management Cluster"
 date = 2023-10-27T10:07:15+02:00
 weight = 10
 +++
 
-## Requirements
+## Prerequisites
 
 * Service type `LoadBalancer` implementation. This can be a cloud solution or a self-managed implementation like [MetalLB](https://metallb.universe.tf).
-* Network access to the tenant cluster nodes with node port range (default: 30000-32767). This is required for the envoy proxy to be able to connect to the tenant cluster nodes.
+* Network access to the tenant cluster nodes with node port range (default: 30000-32767). This is required for the envoy proxy to be able to connect to the tenant cluster nodes. With the mTLS backend transport mode (Enterprise Edition), the proxies instead connect to the tenant proxy on its NodePort, or on the fixed port 15443 when it is exposed through a LoadBalancer service.
 
-## Installation for KubeLB manager
+See [Requirements]({{< relref "../requirements" >}}) for the full port and resource sizing reference.
 
-{{% notice warning %}} In case if Gateway API needs to be enabled for the cluster. Please set `kubelb.enableGatewayAPI` to `true` in the `values.yaml`. This is required otherwise due to missing CRDs, kubelb will not be able to start. {{% /notice %}}
+## Install KubeLB Manager
+
+{{% notice warning %}} If you enable Gateway API support, install its CRDs first and set `kubelb.enableGatewayAPI` to `true` in `values.yaml`. Without the CRDs, KubeLB Manager cannot start. {{% /notice %}}
 
 {{< tabs name="KubeLB Manager" >}}
 {{% tab name="Enterprise Edition" %}}
 
 ### Prerequisites
 
-* Create a namespace **kubelb** for the CCM to be deployed in.
-* Create **imagePullSecrets** for the chart to pull the image from the registry in kubelb namespace.
+* Create a `kubelb` namespace for KubeLB Manager.
+* Create the required `imagePullSecrets` in that namespace so the chart can pull Enterprise Edition images.
 
-At this point a minimal values.yaml should look like this:
+A minimal `values.yaml` looks like this:
 
 ```yaml
 imagePullSecrets:
   - name: <imagePullSecretName>
 ```
 
-### Install the helm chart
+### Install the Helm chart
 
 ```sh
-helm pull oci://quay.io/kubermatic/helm-charts/kubelb-manager-ee --version=v1.4.2 --untardir "." --untar
+helm pull oci://quay.io/kubermatic/helm-charts/kubelb-manager-ee --version=v1.4.3 --untardir "." --untar
 ## Apply CRDs
 kubectl apply -f kubelb-manager-ee/crds/
 ## Create and update values.yaml with the required values.
 helm upgrade --install kubelb-manager kubelb-manager-ee --namespace kubelb -f kubelb-manager-ee/values.yaml --create-namespace
 ```
+
+{{% notice warning %}}
+Helm applies a chart's `crds/` directory only on `helm install` and silently skips it on `helm upgrade`. This applies to the addon subcharts too, so the Gateway API, Envoy Gateway and External DNS CRDs are never updated by Helm. Re-apply the CRDs on every upgrade — see [Upgrading KubeLB]({{< relref "../upgrade" >}}).
+{{% /notice %}}
 
 ### KubeLB Manager EE Values
 
@@ -67,7 +73,7 @@ helm upgrade --install kubelb-manager kubelb-manager-ee --namespace kubelb -f ku
 | kubelb.disableEnvoyGatewayFeatures | bool | `false` | disableEnvoyGatewayFeatures disables Envoy Gateway support for BackendTrafficPolicy and ClientTrafficPolicy. Use this if you're using a Gateway API implementation other than Envoy Gateway. |
 | kubelb.enableGatewayAPI | bool | `false` | enableGatewayAPI specifies whether to enable the Gateway API and Gateway Controllers. By default Gateway API is disabled since without Gateway APIs installed the controller cannot start. |
 | kubelb.enableLeaderElection | bool | `true` |  |
-| kubelb.enableWAF | bool | `false` | [Alpha Feature] enableWAF enables the WAF controller for Web Application Firewall policy validation. WAF is an alpha feature and is disabled by default. |
+| kubelb.enableWAF | bool | `false` | [Beta feature] Enables Web Application Firewall policy validation and reconciliation. WAF is disabled by default. |
 | kubelb.envoyProxy.affinity | object | `{}` |  |
 | kubelb.envoyProxy.gracefulShutdown.disabled | bool | `false` | Disable graceful shutdown (default: false) |
 | kubelb.envoyProxy.nodeSelector | object | `{}` |  |
@@ -139,15 +145,19 @@ helm upgrade --install kubelb-manager kubelb-manager-ee --namespace kubelb -f ku
 {{% /tab %}}
 {{% tab name="Community Edition" %}}
 
-### Install the helm chart
+### Install the Helm chart
 
 ```sh
-helm pull oci://quay.io/kubermatic/helm-charts/kubelb-manager --version=v1.4.2 --untardir "." --untar
+helm pull oci://quay.io/kubermatic/helm-charts/kubelb-manager --version=v1.4.3 --untardir "." --untar
 ## Apply CRDs
 kubectl apply -f kubelb-manager/crds/
 ## Create and update values.yaml with the required values.
 helm upgrade --install kubelb-manager kubelb-manager --namespace kubelb -f kubelb-manager/values.yaml --create-namespace
 ```
+
+{{% notice warning %}}
+Helm applies a chart's `crds/` directory only on `helm install` and silently skips it on `helm upgrade`. This applies to the addon subcharts too, so the Gateway API, Envoy Gateway and External DNS CRDs are never updated by Helm. Re-apply the CRDs on every upgrade — see [Upgrading KubeLB]({{< relref "../upgrade" >}}).
+{{% /notice %}}
 
 ### KubeLB Manager CE Values
 
@@ -219,7 +229,22 @@ helm upgrade --install kubelb-manager kubelb-manager --namespace kubelb -f kubel
 {{% /tab %}}
 {{< /tabs >}}
 
-## Setup the management cluster
+## Verify the installation
+
+Check that the manager is running:
+
+```bash
+kubectl get pods -n kubelb
+```
+
+```text
+NAME                              READY   STATUS    RESTARTS   AGE
+kubelb-manager-6d95d7f45d-xz2lp   2/2     Running   0          1m
+```
+
+The `kubelb-manager` pod must be in `Running` state. Envoy proxy pods appear in the tenant namespaces later, once tenants are registered and load balancers are created.
+
+## Set up the management cluster
 
 {{% notice note %}}
 The examples and tools shared below are for demonstration purposes, you can use any other tools or configurations as per your requirements.
@@ -301,7 +326,7 @@ kubelb-addons:
 
 ### Custom Image Registry
 
-The `kubelb-addons` chart honors `global.imageRegistry` and `global.imagePullSecrets` and propagates both to every addon subchart (ingress-nginx, envoy-gateway, cert-manager, external-dns, metallb, agentgateway). Set them on the top-level install to route all addon images through a private mirror and attach a pull secret, without editing each subchart's own values. See the [Air-Gap Installation]({{< relref "../../tutorials/airgap-installation" >}}) guide for the full end-to-end mirroring workflow; the same flags apply to non-airgap setups pulling from a company registry.
+The `kubelb-addons` chart honors `global.imageRegistry` and `global.imagePullSecrets` and propagates both to every addon subchart (ingress-nginx, envoy-gateway, cert-manager, external-dns, metallb, agentgateway). Set them on the top-level install to route all addon images through a private mirror and attach a pull secret, without editing each subchart's own values. See the [Air-Gap Installation]({{< relref "../air-gap" >}}) guide for the full end-to-end mirroring workflow; the same flags apply to non-airgap setups pulling from a company registry.
 
 ### Client Header Size Limits
 
@@ -329,6 +354,8 @@ spec:
 ```
 
 All three fields default to Envoy's maximum, so out of the box KubeLB's managed Envoy never rejects headers the edge already accepted. Lower them if you want the managed Envoy to enforce a smaller cap.
+
+On the Gateway API path the effective ceiling is therefore Envoy Gateway's stock limits of **100 request headers / 60 KiB**, not KubeLB's: oversized requests are rejected with `431` at the Envoy Gateway hop before KubeLB's configured limits apply, unless a [ClientTrafficPolicy]({{< relref "../../tutorials/gatewayapi/client-traffic-policy" >}}) raising them is attached to the Gateway.
 
 The Envoy Gateway edge is not managed by KubeLB. Raise its limit yourself on the `EnvoyProxy` resource that your `GatewayClass` references, for example with a bootstrap runtime layer:
 
